@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 import csv
 import os
 import subprocess
+import time
 
 # ====================== KONFIG ======================
 
@@ -76,6 +77,7 @@ ERC20_ABI = [
 ]
 
 HISTORY_FILE = "history.csv"
+BSC_CHAIN_ID = 56
 
 # ====================== UTIL ======================
 
@@ -169,6 +171,32 @@ def get_web3():
             continue
 
     raise Exception("Semua RPC gagal")
+
+
+def get_web3_for_receipt(tx_hash):
+    """
+    Coba RPC lain untuk membaca receipt jika RPC sebelumnya rate limit.
+    Ini untuk mengatasi 403 Forbidden error.
+    """
+    for rpc in RPC_LIST:
+        try:
+            print(f"\n🔄 Coba RPC lain untuk receipt: {rpc}")
+            
+            w3 = Web3(
+                Web3.HTTPProvider(
+                    rpc,
+                    request_kwargs={"timeout": 12}
+                )
+            )
+            
+            if w3.is_connected():
+                print(f"✅ RPC alternatif terhubung")
+                return w3
+        except Exception as e:
+            print(f"❌ RPC gagal: {e}")
+            continue
+    
+    return None
 
 
 def load_list(path: str):
@@ -288,13 +316,59 @@ def append_history(row: dict):
         writer.writerow(row)
 
 
+def wait_for_receipt_with_retry(w3, tx_hash, timeout=180, poll_latency=2):
+    """
+    Tunggu receipt dengan retry otomatis ke RPC lain jika ada error.
+    Ini mengatasi masalah 403 Forbidden saat polling.
+    """
+    start_time = time.time()
+    current_w3 = w3
+    retry_count = 0
+    max_retries = 3
+    
+    while time.time() - start_time < timeout:
+        try:
+            receipt = current_w3.eth.get_transaction_receipt(tx_hash)
+            
+            if receipt is not None:
+                print("✅ Receipt ditemukan!")
+                return receipt
+            
+            print(f"⏳ Menunggu transaksi masuk block... ({int(time.time() - start_time)}s)")
+            time.sleep(poll_latency)
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Jika ada error rate limit atau forbidden, coba RPC lain
+            if "403" in error_msg or "rate" in error_msg or "forbidden" in error_msg:
+                
+                if retry_count < max_retries:
+                    print(f"\n⚠️ RPC rate limit atau error: {e}")
+                    print(f"🔄 Mencoba RPC alternatif... ({retry_count + 1}/{max_retries})")
+                    
+                    new_w3 = get_web3_for_receipt(tx_hash)
+                    if new_w3:
+                        current_w3 = new_w3
+                        retry_count += 1
+                        time.sleep(3)  # Tunggu sebelum retry
+                        continue
+                
+                print(f"❌ Semua RPC mengalami error setelah {max_retries} kali retry")
+                raise Exception(f"Gagal membaca receipt setelah {max_retries} retry: {e}")
+            else:
+                raise
+    
+    raise TimeExhausted(f"Transaksi tidak masuk block dalam {timeout} detik")
+
+
 # ====================== MAIN ======================
 
 def main():
 
     print("=" * 52)
     print("             BSC SEND TOKEN")
-    print("          SAFE TRANSACTION MODE")
+    print("       DENGAN FALLBACK RPC OTOMATIS")
     print("=" * 52)
 
     # --------------------------------------------------
@@ -740,7 +814,7 @@ def main():
 
                 "gasPrice": gas_price,
 
-                "chainId": 56
+                "chainId": BSC_CHAIN_ID
             }
 
         else:
@@ -771,7 +845,7 @@ def main():
 
                     "gasPrice": gas_price,
 
-                    "chainId": 56
+                    "chainId": BSC_CHAIN_ID
                 })
             )
 
@@ -834,7 +908,7 @@ def main():
 
                     "gasPrice": gas_price,
 
-                    "chainId": 56
+                    "chainId": BSC_CHAIN_ID
                 })
             )
 
@@ -959,6 +1033,8 @@ def main():
     # BROADCAST
     # --------------------------------------------------
 
+    tx_hex = None
+
     try:
 
         print(
@@ -990,7 +1066,7 @@ def main():
         )
 
         print(
-            "\n⏳ Menunggu receipt..."
+            "\n⏳ Menunggu receipt (dengan auto-retry)..."
         )
 
     except Exception as e:
@@ -1033,17 +1109,16 @@ def main():
         return
 
     # --------------------------------------------------
-    # WAIT RECEIPT
+    # WAIT RECEIPT (DENGAN RETRY)
     # --------------------------------------------------
 
     try:
 
-        receipt = (
-            w3.eth.wait_for_transaction_receipt(
-                tx_hash,
-                timeout=180,
-                poll_latency=2
-            )
+        receipt = wait_for_receipt_with_retry(
+            w3,
+            tx_hash,
+            timeout=300,
+            poll_latency=2
         )
 
     except TimeExhausted:
@@ -1053,12 +1128,30 @@ def main():
         )
 
         print(
-            "Belum masuk block dalam "
-            "180 detik."
+            "Belum masuk block dalam 300 detik."
+        )
+
+        print(
+            "\nTransaksi sudah terkirim, kemungkinan:"
+        )
+        print(
+            "  • Jaringan sedang congested"
+        )
+
+        print(
+            "  • Gas price terlalu rendah"
+        )
+
+        print(
+            "  • RPC sedang bermasalah"
         )
 
         print(
             "\n⚠️ JANGAN langsung kirim ulang."
+        )
+
+        print(
+            "Cek di BscScan setelah 5-10 menit."
         )
 
         append_history({
@@ -1087,7 +1180,7 @@ def main():
                 "",
 
             "status":
-                "pending"
+                "pending_check_later"
         })
 
         copy_menu(
@@ -1101,7 +1194,50 @@ def main():
     except Exception as e:
 
         print(
-            f"\n❌ Gagal membaca receipt: {e}"
+            f"\n❌ Error menunggu receipt: {e}"
+        )
+
+        print(
+            "\nTransaksi mungkin tetap berlanjut."
+        )
+
+        print(
+            f"Cek di: {tx_link}"
+        )
+
+        append_history({
+
+            "waktu":
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+
+            "dari":
+                from_addr,
+
+            "ke":
+                to_addr,
+
+            "token":
+                symbol,
+
+            "jumlah":
+                f"{amount:.8f}",
+
+            "tx_hash":
+                tx_hex,
+
+            "gas_bnb":
+                "",
+
+            "status":
+                f"receipt_error: {e}"
+        })
+
+        copy_menu(
+            tx_hash=tx_hex,
+            tx_link=tx_link,
+            address=to_addr
         )
 
         return
