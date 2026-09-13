@@ -717,49 +717,8 @@ def main():
             # BNB
             # ==========================================
 
-            # Untuk BNB, gas normal 21000
-            gas_limit = 21000
-
-            fee = (
-                gas_limit
-                * gas_price
-            )
-
-            if mode == "2":
-
-                if bal_wei <= fee:
-
-                    print(
-                        "❌ BNB tidak cukup "
-                        "untuk gas."
-                    )
-
-                    return
-
-                amount_wei = (
-                    bal_wei - fee
-                )
-
-                amount = (
-                    Decimal(amount_wei)
-                    / Decimal(10 ** 18)
-                )
-
-            else:
-
-                if (
-                    amount_wei + fee
-                    > bal_wei
-                ):
-
-                    print(
-                        "❌ BNB tidak cukup "
-                        "untuk jumlah + gas."
-                    )
-
-                    return
-
-            # Estimate gas
+            # Step 1: Tentukan gas_limit terlebih dahulu
+            # Gunakan amount_wei sementara untuk estimate (akan dihitung ulang untuk mode MAX)
             estimate_tx = {
                 "from": from_addr,
                 "to": to_addr,
@@ -785,11 +744,34 @@ def main():
 
                 gas_limit = 21000
 
+            # Step 2: Hitung fee dengan gas_limit final
             fee = (
                 gas_limit
                 * gas_price
             )
 
+            # Step 3: Untuk mode MAX, hitung amount_wei yang tepat
+            if mode == "2":
+
+                if bal_wei <= fee:
+
+                    print(
+                        "❌ BNB tidak cukup "
+                        "untuk gas."
+                    )
+
+                    return
+
+                amount_wei = (
+                    bal_wei - fee
+                )
+
+                amount = (
+                    Decimal(amount_wei)
+                    / Decimal(10 ** 18)
+                )
+
+            # Step 4: Validasi final untuk semua mode
             if (
                 amount_wei + fee
                 > bal_wei
@@ -802,6 +784,7 @@ def main():
 
                 return
 
+            # Step 5: Build transaction
             tx = {
 
                 "nonce": nonce,
