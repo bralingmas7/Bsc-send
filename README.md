@@ -34,3 +34,8 @@ pip install web3
 
 git clone https://github.com/bralingmas7/Bsc-send.git
 cd Bsc-send
+```
+
+## Pembuat
+
+Dibuat oleh **Abim16**
