@@ -717,12 +717,13 @@ def main():
             # BNB
             # ==========================================
 
-            # Step 1: Tentukan gas_limit terlebih dahulu
-            # Gunakan amount_wei sementara untuk estimate (akan dihitung ulang untuk mode MAX)
+            # Untuk mode MAX, gunakan temporary value untuk estimate
+            estimate_value = amount_wei
+
             estimate_tx = {
                 "from": from_addr,
                 "to": to_addr,
-                "value": amount_wei,
+                "value": estimate_value,
             }
 
             try:
@@ -744,13 +745,12 @@ def main():
 
                 gas_limit = 21000
 
-            # Step 2: Hitung fee dengan gas_limit final
             fee = (
                 gas_limit
                 * gas_price
             )
 
-            # Step 3: Untuk mode MAX, hitung amount_wei yang tepat
+            # Untuk mode MAX, hitung amount yang tepat setelah fee diketahui
             if mode == "2":
 
                 if bal_wei <= fee:
@@ -771,7 +771,38 @@ def main():
                     / Decimal(10 ** 18)
                 )
 
-            # Step 4: Validasi final untuk semua mode
+                # Re-estimate gas dengan amount MAX yang sebenarnya
+                estimate_tx = {
+                    "from": from_addr,
+                    "to": to_addr,
+                    "value": amount_wei,
+                }
+
+                try:
+
+                    estimated = (
+                        w3.eth.estimate_gas(
+                            estimate_tx
+                        )
+                    )
+
+                    gas_limit = max(
+                        21000,
+                        int(
+                            estimated * 1.10
+                        )
+                    )
+
+                except Exception:
+
+                    gas_limit = 21000
+
+                fee = (
+                    gas_limit
+                    * gas_price
+                )
+
+            # Validasi final untuk semua mode
             if (
                 amount_wei + fee
                 > bal_wei
@@ -784,7 +815,6 @@ def main():
 
                 return
 
-            # Step 5: Build transaction
             tx = {
 
                 "nonce": nonce,
