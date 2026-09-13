@@ -173,31 +173,131 @@ def get_web3():
     raise Exception("Semua RPC gagal")
 
 
-def get_web3_for_receipt(tx_hash):
+def wait_for_receipt_with_retry(w3, tx_hash, timeout=180, poll_latency=2):
     """
-    Coba RPC lain untuk membaca receipt jika RPC sebelumnya rate limit.
-    Ini untuk mengatasi 403 Forbidden error.
-    """
-    for rpc in RPC_LIST:
-        try:
-            print(f"\n🔄 Coba RPC lain untuk receipt: {rpc}")
-            
-            w3 = Web3(
-                Web3.HTTPProvider(
-                    rpc,
-                    request_kwargs={"timeout": 12}
-                )
-            )
-            
-            if w3.is_connected():
-                print(f"✅ RPC alternatif terhubung")
-                return w3
-        except Exception as e:
-            print(f"❌ RPC gagal: {e}")
-            continue
+    Tunggu receipt dengan retry otomatis ke RPC lain jika ada error.
     
-    return None
+    Logika:
+    1. Mulai dengan RPC utama (w3).
+    2. Jika terjadi 403/error, skip RPC tersebut dan lanjut ke RPC berikutnya.
+    3. Jika receipt belum tersedia (TransactionNotFound), tetap tunggu dan polling.
+    4. Jika semua RPC dicoba dan receipt belum tersedia, ulangi polling.
+    5. Jika salah satu RPC berhasil dapat receipt, langsung return.
+    6. Timeout tetap menjadi batas utama.
+    """
+    start_time = time.time()
+    failed_rpcs = set()
+    rpc_index = 0
+    
+    while time.time() - start_time < timeout:
+        
+        # ========================================
+        # Tentukan RPC untuk polling saat ini
+        # ========================================
+        
+        # Mulai dari RPC utama jika belum dicoba, atau skip ke RPC yang belum gagal
+        current_rpc_url = None
+        current_w3 = None
+        
+        # Coba RPC utama (w3) terlebih dahulu
+        if 0 not in failed_rpcs:
+            current_w3 = w3
+            current_rpc_url = RPC_LIST[0]
+            rpc_index = 0
+        else:
+            # Cari RPC yang belum gagal
+            for i, rpc_url in enumerate(RPC_LIST):
+                if i not in failed_rpcs:
+                    current_rpc_url = rpc_url
+                    try:
+                        current_w3 = Web3(
+                            Web3.HTTPProvider(
+                                rpc_url,
+                                request_kwargs={"timeout": 12}
+                            )
+                        )
+                        rpc_index = i
+                        break
+                    except Exception:
+                        failed_rpcs.add(i)
+                        continue
+        
+        # Jika semua RPC sudah gagal, reset dan coba ulang polling
+        if current_w3 is None:
+            if len(failed_rpcs) == len(RPC_LIST):
+                print(f"⏳ Semua RPC sedang tidak tersedia. "
+                      f"Tunggu {poll_latency}s kemudian coba ulang... "
+                      f"({int(time.time() - start_time)}s/{timeout}s)")
+                time.sleep(poll_latency)
+                # Reset failed_rpcs untuk round berikutnya
+                failed_rpcs.clear()
+                continue
+            else:
+                time.sleep(poll_latency)
+                continue
+        
+        # ========================================
+        # Polling receipt dari RPC yang dipilih
+        # ========================================
+        
+        try:
+            print(f"🔄 Coba RPC receipt: {current_rpc_url}")
+            
+            receipt = current_w3.eth.get_transaction_receipt(tx_hash)
+            
+            if receipt is not None:
+                print("✅ Receipt ditemukan!")
+                return receipt
+            else:
+                print(f"⏳ Receipt belum tersedia: {current_rpc_url}")
+                # Lanjut ke RPC berikutnya tanpa menambah failed_rpcs
+                time.sleep(0.5)
+                continue
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # ========================================
+            # Deteksi error: 403, rate limit, dll
+            # ========================================
+            
+            if "403" in error_msg or "forbidden" in error_msg:
+                print(f"⚠️ RPC ditolak/403: {current_rpc_url}")
+                print(f"⏭️ Skip RPC ini")
+                failed_rpcs.add(rpc_index)
+                time.sleep(1)
+                continue
+            
+            elif "rate" in error_msg or "too many requests" in error_msg:
+                print(f"⚠️ RPC rate limit: {current_rpc_url}")
+                print(f"⏭️ Skip RPC ini")
+                failed_rpcs.add(rpc_index)
+                time.sleep(2)
+                continue
+            
+            elif "connection" in error_msg or "timeout" in error_msg:
+                print(f"⚠️ RPC koneksi error: {current_rpc_url}")
+                print(f"⏭️ Skip RPC ini")
+                failed_rpcs.add(rpc_index)
+                time.sleep(1)
+                continue
+            
+            else:
+                # Error lainnya (misalnya TransactionNotFound pada beberapa RPC)
+                print(f"⚠️ Error dari RPC: {current_rpc_url}: {e}")
+                print(f"⏭️ Skip RPC ini untuk saat ini")
+                failed_rpcs.add(rpc_index)
+                time.sleep(1)
+                continue
+    
+    # ========================================
+    # Timeout tercapai
+    # ========================================
+    
+    raise TimeExhausted(f"Transaksi tidak masuk block dalam {timeout} detik")
 
+
+# ====================== MAIN ======================
 
 def load_list(path: str):
 
@@ -315,54 +415,6 @@ def append_history(row: dict):
 
         writer.writerow(row)
 
-
-def wait_for_receipt_with_retry(w3, tx_hash, timeout=180, poll_latency=2):
-    """
-    Tunggu receipt dengan retry otomatis ke RPC lain jika ada error.
-    Ini mengatasi masalah 403 Forbidden saat polling.
-    """
-    start_time = time.time()
-    current_w3 = w3
-    retry_count = 0
-    max_retries = 3
-    
-    while time.time() - start_time < timeout:
-        try:
-            receipt = current_w3.eth.get_transaction_receipt(tx_hash)
-            
-            if receipt is not None:
-                print("✅ Receipt ditemukan!")
-                return receipt
-            
-            print(f"⏳ Menunggu transaksi masuk block... ({int(time.time() - start_time)}s)")
-            time.sleep(poll_latency)
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            
-            # Jika ada error rate limit atau forbidden, coba RPC lain
-            if "403" in error_msg or "rate" in error_msg or "forbidden" in error_msg:
-                
-                if retry_count < max_retries:
-                    print(f"\n⚠️ RPC rate limit atau error: {e}")
-                    print(f"🔄 Mencoba RPC alternatif... ({retry_count + 1}/{max_retries})")
-                    
-                    new_w3 = get_web3_for_receipt(tx_hash)
-                    if new_w3:
-                        current_w3 = new_w3
-                        retry_count += 1
-                        time.sleep(3)  # Tunggu sebelum retry
-                        continue
-                
-                print(f"❌ Semua RPC mengalami error setelah {max_retries} kali retry")
-                raise Exception(f"Gagal membaca receipt setelah {max_retries} retry: {e}")
-            else:
-                raise
-    
-    raise TimeExhausted(f"Transaksi tidak masuk block dalam {timeout} detik")
-
-
-# ====================== MAIN ======================
 
 def main():
 
