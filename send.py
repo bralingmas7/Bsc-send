@@ -717,13 +717,11 @@ def main():
             # BNB
             # ==========================================
 
-            # Untuk mode MAX, gunakan temporary value untuk estimate
-            estimate_value = amount_wei
-
+            # Estimate gas dengan amount_wei (user input untuk manual, atau bal_wei untuk MAX)
             estimate_tx = {
                 "from": from_addr,
                 "to": to_addr,
-                "value": estimate_value,
+                "value": amount_wei,
             }
 
             try:
@@ -750,7 +748,7 @@ def main():
                 * gas_price
             )
 
-            # Untuk mode MAX, hitung amount yang tepat setelah fee diketahui
+            # Untuk mode MAX, hitung amount_wei yang tepat setelah fee diketahui
             if mode == "2":
 
                 if bal_wei <= fee:
@@ -769,37 +767,6 @@ def main():
                 amount = (
                     Decimal(amount_wei)
                     / Decimal(10 ** 18)
-                )
-
-                # Re-estimate gas dengan amount MAX yang sebenarnya
-                estimate_tx = {
-                    "from": from_addr,
-                    "to": to_addr,
-                    "value": amount_wei,
-                }
-
-                try:
-
-                    estimated = (
-                        w3.eth.estimate_gas(
-                            estimate_tx
-                        )
-                    )
-
-                    gas_limit = max(
-                        21000,
-                        int(
-                            estimated * 1.10
-                        )
-                    )
-
-                except Exception:
-
-                    gas_limit = 21000
-
-                fee = (
-                    gas_limit
-                    * gas_price
                 )
 
             # Validasi final untuk semua mode
